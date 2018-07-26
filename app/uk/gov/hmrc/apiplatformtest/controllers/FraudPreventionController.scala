@@ -16,27 +16,48 @@
 
 package uk.gov.hmrc.apiplatformtest.controllers
 
+import cats.data.NonEmptyList
+import cats.data.Validated.{Invalid, Valid}
 import play.api.libs.json.Json
-import play.api.mvc.{Action, AnyContent}
+import play.api.mvc.{Action, AnyContent, Request, Result}
 import uk.gov.hmrc.apiplatformtest.models.JsonFormatters.formatNoFraudAnswer
 import uk.gov.hmrc.apiplatformtest.models.NoFraudAnswer
-import uk.gov.hmrc.fraudprevention.AntiFraudHeadersValidatorActionFilter
+import uk.gov.hmrc.fraudprevention.{AntiFraudHeadersValidator, AntiFraudHeadersValidatorActionFilter}
+import uk.gov.hmrc.fraudprevention.headervalidators.impl._
+import uk.gov.hmrc.fraudprevention.model.{ErrorConversion, ErrorResponse}
+import uk.gov.hmrc.fraudprevention.model.HeadersValidation.HeadersValidation
 import uk.gov.hmrc.http.HeaderCarrier
 
+import scala.concurrent.Future
 import scala.concurrent.Future.successful
 
-trait FraudPreventionController extends CommonController {
+trait FraudPreventionController extends ErrorConversion with CommonController {
 
   override implicit val hc: HeaderCarrier = HeaderCarrier()
 
-  lazy private val requiredHeaders = List("Gov-Client-Public-Port")
-  lazy private val fraudPreventionFilter = AntiFraudHeadersValidatorActionFilter.actionFilterFromHeaderNames(requiredHeaders)
+  lazy private val requiredHeaderValidators = List(GovClientColourDepthHeaderValidator, GovClientPublicPortHeaderValidator)
 
+  lazy private val fraudPreventionFilter = AntiFraudHeadersValidatorActionFilter.actionFilterFromHeaderValidators(requiredHeaderValidators)
 
-  def handleFraud(): Action[AnyContent] = fraudPreventionFilter.async { implicit request =>
+  private def success: Future[Result] = {
     successful(
       Ok(Json.toJson(NoFraudAnswer("All required headers have been sent correctly in the request.")))
     )
+  }
+
+  def handleFraudWithFilter(): Action[AnyContent] = fraudPreventionFilter.async { implicit request: Request[AnyContent] =>
+    success
+  }
+
+  def handleFraud(): Action[AnyContent] = Action.async { implicit request: Request[AnyContent] =>
+
+    val validatedNel: HeadersValidation = AntiFraudHeadersValidator.validate(requiredHeaderValidators)(request)
+
+    validatedNel match {
+      case Valid(_: Unit) => success
+      case Invalid(errors: NonEmptyList[String]) => successful(ErrorResponse(errors.toList))
+    }
+
   }
 
 }
